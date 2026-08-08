@@ -402,6 +402,7 @@ tr.tot td{background:#F4F8FF;font-weight:700;border-top:2px solid var(--orange-m
 <div class="page" id="p11"><div class="loading"><div class="spinner"></div><div class="loading-text">Đang tải dữ liệu...</div></div></div>
 <div class="page" id="p12"></div>
 <div class="page" id="p13"><div class="loading"><div class="spinner"></div><div class="loading-text">Đang tải dữ liệu...</div></div></div>
+<div class="page" id="p14"><div class="loading"><div class="spinner"></div><div class="loading-text">Đang tải dữ liệu...</div></div></div>
 </main>
 
 <script>
@@ -414,7 +415,7 @@ const NAV_GROUPS=[
 {id:'g_ot',icon:'⏱️',label:'Ontime',items:[['p5','🛰️','ODR TTS'],['p6','🚀','OPR TTS']]},
 {id:'g_lt',icon:'⏲️',label:'Leadtime',page:'p13',cap:'Leadtime KCT'},
 {id:'g_ag',icon:'⏳',label:'Aging',page:'p7',cap:'Aging Daily'},
-{id:'g_rl',icon:'📉',label:'Rớt LC',page:'p9',cap:'Rớt LC Daily'},
+{id:'g_rl',icon:'🔁',label:'Luân chuyển',items:[['p9','📉','Rớt LC Daily'],['p14','⏱️','Ontime Luân Chuyển']]},
 {id:'g_hr',icon:'👥',label:'Nhân sự',items:[['p10','📋','Định biên'],['p11','📈','Năng suất']]},
 {id:'g_ai',icon:'✨',label:'AI',page:'p12',cap:'AI Analysis',cls:'ai'}
 ];
@@ -452,6 +453,7 @@ if(pod){pod.classList.add('cur');pod.querySelector('.nav-circle')?.classList.add
 document.querySelectorAll('.dd-item').forEach(d=>d.classList.toggle('active',d.dataset.pg===id));
 if(id==='p8'&&!window._gtcdLoaded){window._gtcdLoaded=true;buildGTCDetailPage();}
 if(id==='p9'&&!window._rotlcLoaded){window._rotlcLoaded=true;buildRotLCPage();}
+if(id==='p14'&&!window._otlcLoaded){window._otlcLoaded=true;buildOntimeLCPage();}
 if(id==='p10'&&!window._hronLoaded){window._hronLoaded=true;buildHRONPage();}
 if(id==='p11'&&!window._nsLoaded){window._nsLoaded=true;buildNSPage();}
 if(id==='p13'&&!window._ltkctLoaded){window._ltkctLoaded=true;buildLTKCTPage();}
@@ -1966,6 +1968,236 @@ h+=rlcTable('loaikh','A. Theo Loại KH','🏷️','Loại KH');
 h+=rlcTable('loaihang','B. Theo Loại hàng','📦','Loại hàng');
 h+=rlcTable('am','C. Theo AM','👤','AM');
 h+=rlcTable('bc','D. Theo Bưu Cục xuất','🏪','Bưu cục xuất');
+return h;
+}
+
+/* ===== ONTIME LUÂN CHUYỂN (p14) — sheet Ontime Lc ===== */
+// Cột kỳ vọng (header linh hoạt): AM, bc_lay (Bưu cục), shift, ltc_date, vol_ltc, Ontime [, ontime_cnt]
+window._OTLC={rows:[],greenThr:90,yellowThr:80};
+function otlcNormKey(h){
+return String(h??'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[%]/g,'').replace(/[\s_\-\.]+/g,'');
+}
+function otlcFindCol(headers,aliases){
+const norms=headers.map(otlcNormKey);
+for(const a of aliases){const i=norms.indexOf(otlcNormKey(a));if(i>=0)return i;}
+return -1;
+}
+function normalizeOntimeLC(raw){
+if(!raw||!raw.length)return[];
+const headers=(raw[0]||[]).map(h=>String(h??'').trim());
+const iAm=otlcFindCol(headers,['am','area manager','nguoiql','qlbc']);
+const iBc=otlcFindCol(headers,['bc_lay','bclay','bc lay','buucuc','bưu cục','bc','tenbc','station','postoffice','tenbuucuc','buu cuc']);
+const iShift=otlcFindCol(headers,['shift','ca','ca_ltc','caltc','ca lay']);
+const iDate=otlcFindCol(headers,['ltc_date','ltcdate','date','ngay','ngày','thoigian','time']);
+const iVol=otlcFindCol(headers,['vol_ltc','volltc','vol','volume','vol ltc']);
+const iOt=otlcFindCol(headers,['ontime','%ontime','pctontime','tyleontime','tileontime','ontime_pct']);
+const iCnt=otlcFindCol(headers,['ontime_cnt','ontimecnt','cnt','soluongontime','ontime_ok','ok']);
+if(iDate<0||iVol<0||iOt<0){
+  // Fallback vị trí thường gặp nếu thiếu header chuẩn
+  const fallback=raw.slice(1).map(r=>{
+    const am=(r[0]||'').toString().trim(),bc=(r[1]||'').toString().trim();
+    const shift=(r[2]||'').toString().trim()||'All';
+    const date=parseSheetDate(r[3])||agingIsoDate(r[3]);
+    const vol=Math.round(parseSheetNum(r[4]));
+    const pct=normOntimePct(r[5]);
+    const cnt=r[6]!=null&&String(r[6]).trim()!==''?Math.round(parseSheetNum(r[6])):null;
+    return{am,bc,shift,date,vol,pct,cnt};
+  }).filter(r=>r.date&&r.date.startsWith('20')&&(r.am||r.bc)&&r.vol>0);
+  return fallback;
+}
+return raw.slice(1).map(r=>{
+  const am=iAm>=0?(r[iAm]||'').toString().trim():'';
+  const bc=iBc>=0?(r[iBc]||'').toString().trim():'';
+  const shift=iShift>=0?((r[iShift]||'').toString().trim()||'All'):'All';
+  const date=parseSheetDate(r[iDate])||agingIsoDate(r[iDate]);
+  const vol=Math.round(parseSheetNum(r[iVol]));
+  const pct=normOntimePct(r[iOt]);
+  const cnt=iCnt>=0&&r[iCnt]!=null&&String(r[iCnt]).trim()!==''?Math.round(parseSheetNum(r[iCnt])):null;
+  return{am,bc,shift,date,vol,pct,cnt};
+}).filter(r=>r.date&&r.date.startsWith('20')&&(r.am||r.bc)&&r.vol>=0);
+}
+async function fetchOntimeLCRaw(){
+const names=['Ontime Lc','Ontime LC','Ontime_Lc','ONTIME LC'];
+let lastErr=null;
+for(const nm of names){
+  try{const raw=await fetchSheetById(ROTLC_SID,nm);if(raw&&raw.length)return{raw,src:nm,sid:'Rot'};}catch(e){lastErr=e;}
+  try{const raw=await fetchSheetById(SID,nm);if(raw&&raw.length)return{raw,src:nm,sid:'Main'};}catch(e){lastErr=e;}
+}
+throw lastErr||new Error('Không tìm thấy sheet "Ontime Lc"');
+}
+async function buildOntimeLCPage(){
+const el=document.getElementById('p14');
+try{
+  let rows=window._OTLC.rows;
+  if(!rows||!rows.length){
+    const {raw,src,sid}=await fetchOntimeLCRaw();
+    rows=normalizeOntimeLC(raw);
+    window._OTLC.rows=rows;window._OTLC.src=src;window._OTLC.sid=sid;
+  }
+  if(!rows.length){el.innerHTML=errPage('Sheet Ontime Lc không có dữ liệu hợp lệ (cần cột ltc_date, vol_ltc, Ontime).');return;}
+  el.innerHTML=otlcSkeleton(rows);
+  renderOntimeLC();
+}catch(e){el.innerHTML=errPage(`Ontime Luân Chuyển (Ontime Lc): ${e.message}`);}
+}
+function otlcSkeleton(rows){
+const ams=[...new Set(rows.map(r=>r.am).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'vi'));
+const bcs=[...new Set(rows.map(r=>r.bc).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'vi'));
+const shifts=[...new Set(rows.map(r=>r.shift).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'vi'));
+const allD=[...new Set(rows.map(r=>r.date))].sort((a,b)=>b.localeCompare(a));
+const dTo=allD[0]||'',dFrom=allD[Math.min(6,allD.length-1)]||'';
+const mkOpt=(arr,sv)=>arr.map(d=>`<option value="${d}"${d===sv?' selected':''}>${shortDDow(d)}</option>`).join('');
+const mkShift=shifts.map(s=>`<option value="${String(s).replace(/"/g,'&quot;')}">${s}</option>`).join('');
+const extra=`
+  <div><label style="display:block;margin-bottom:3px">Shift</label><select id="otlc_shift" onchange="renderOntimeLC()"><option value="">Tất cả shift</option>${mkShift}</select></div>
+  <div><label style="display:block;margin-bottom:3px">Từ ngày</label><select id="otlc_from" onchange="renderOntimeLC()">${mkOpt(allD,dFrom)}</select></div>
+  <div><label style="display:block;margin-bottom:3px">Đến ngày</label><select id="otlc_to" onchange="renderOntimeLC()">${mkOpt(allD,dTo)}</select></div>`;
+return`<div class="page-header">
+  <div class="page-title">Ontime Luân Chuyển</div>
+  <div class="page-meta"><span class="tag tag-orange">⏱️ Ontime LTC · Vol_ltc theo ltc_date · Nguồn: ${window._OTLC.src||'Ontime Lc'}</span><span>Ngày mới nhất: ${agingFmtDate(dTo)}</span></div>
+</div>
+${amBcFilterBar('otlc',ams,bcs,'renderOntimeLC',extra)}
+<div id="otlc_kpi"></div>
+<div class="card"><div class="card-header"><div class="card-title"><div class="card-icon">👤</div>A. Theo AM — Vol_ltc & Ontime theo ngày</div><div class="card-info">Sắp xếp theo Ontime ngày gần nhất</div></div><div id="otlc_amTable"></div></div>
+<div class="card"><div class="card-header"><div class="card-title"><div class="card-icon">🏪</div>B. Theo Bưu cục — Vol_ltc & Ontime theo ngày</div><div class="card-info">Sắp xếp theo Ontime ngày gần nhất</div></div><div id="otlc_bcTable"></div></div>`;
+}
+function otlcReadFilters(){
+const {am,bc}=readAmBcFilter('otlc');
+const shift=document.getElementById('otlc_shift')?.value||'';
+const from=document.getElementById('otlc_from')?.value||'';
+const to=document.getElementById('otlc_to')?.value||'';
+const lo=from&&to?(from<=to?from:to):from||to;
+const hi=from&&to?(from<=to?to:from):to||from;
+return{am,bc,shift,lo,hi};
+}
+function otlcFiltered(){
+const {am,bc,shift,lo,hi}=otlcReadFilters();
+return(window._OTLC.rows||[]).filter(r=>{
+  if(am&&r.am!==am)return false;
+  if(bc&&r.bc!==bc)return false;
+  if(shift&&r.shift!==shift)return false;
+  if(lo&&r.date<lo)return false;
+  if(hi&&r.date>hi)return false;
+  return true;
+});
+}
+function otlcAgg(rows){
+let vol=0,okW=0,okCnt=0,hasCnt=false;
+rows.forEach(r=>{
+  vol+=r.vol||0;
+  if(r.cnt!=null&&isFinite(r.cnt)){hasCnt=true;okCnt+=r.cnt;}
+  else if(r.pct!=null&&isFinite(r.pct))okW+=(r.vol||0)*r.pct;
+});
+const pct=hasCnt?(vol?okCnt/vol*100:null):(vol?okW/vol:null);
+return{vol,pct,cnt:hasCnt?okCnt:(pct!=null&&vol?Math.round(vol*pct/100):null)};
+}
+function otlcPivot(rows,keyFn,extraFn){
+const map={};
+rows.forEach(r=>{
+  const k=keyFn(r);if(!k)return;
+  if(!map[k])map[k]={name:k,...(extraFn?extraFn(r):{}),byD:{}};
+  if(!map[k].byD[r.date])map[k].byD[r.date]=[];
+  map[k].byD[r.date].push(r);
+});
+Object.values(map).forEach(row=>{
+  Object.keys(row.byD).forEach(d=>{row[d]=otlcAgg(row.byD[d]);});
+  delete row.byD;
+});
+return map;
+}
+function otlcPctClass(pct){
+const g=window._OTLC.greenThr,y=window._OTLC.yellowThr;
+if(pct==null||!isFinite(pct))return'';
+return pct>=g?'g':pct>=y?'m':'b';
+}
+function renderOntimeLC(){
+const data=otlcFiltered();
+const kpiEl=document.getElementById('otlc_kpi');
+const amEl=document.getElementById('otlc_amTable');
+const bcEl=document.getElementById('otlc_bcTable');
+if(!kpiEl||!amEl||!bcEl)return;
+if(!data.length){
+  kpiEl.innerHTML='<p style="padding:16px;color:var(--text-sub)">Không có dữ liệu theo bộ lọc</p>';
+  amEl.innerHTML='';bcEl.innerHTML='';return;
+}
+const allD=[...new Set(data.map(r=>r.date))].sort();
+const dates=allD.slice(-7);
+const n1=dates[dates.length-1]||'',n2=dates[dates.length-2]||'';
+const a1=otlcAgg(data.filter(r=>r.date===n1));
+const a2=n2?otlcAgg(data.filter(r=>r.date===n2)):{vol:0,pct:null};
+const dVol=(a1.vol||0)-(a2.vol||0);
+const dOt=(a1.pct!=null&&a2.pct!=null)?(a1.pct-a2.pct):null;
+const nAM=new Set(data.filter(r=>r.date===n1).map(r=>r.am).filter(Boolean)).size;
+const nBC=new Set(data.filter(r=>r.date===n1).map(r=>r.bc).filter(Boolean)).size;
+const nShift=new Set(data.filter(r=>r.date===n1).map(r=>r.shift).filter(Boolean)).size;
+const volCol=dVol>0?'var(--orange)':dVol<0?'var(--green)':'var(--text-sub)';
+const otCol=dOt==null?'var(--text-sub)':dOt>=0?'var(--green)':'var(--red)';
+const volIcon=dVol>0?'▲':dVol<0?'▼':'—';
+const otIcon=dOt==null?'—':dOt>=0?'▲':'▼';
+let kh=`<div class="kpi-grid" style="grid-template-columns:repeat(4,1fr)">`;
+[{ic:'⏱️',label:'Ontime tổng vùng hôm qua',val:a1.pct!=null?a1.pct.toFixed(1)+'%':'—',sub:agingFmtDate(n1),c:a1.pct!=null&&a1.pct>=window._OTLC.greenThr?'var(--green)':a1.pct!=null&&a1.pct>=window._OTLC.yellowThr?'var(--yellow)':'var(--red)',bg:'#DCFCE7'},
+  {ic:'📦',label:'Vol_ltc hôm qua',val:fmt(a1.vol),sub:agingFmtDate(n1),c:'var(--orange)',bg:'#FFF0EB'},
+  {ic:'📈',label:'Tăng/Giảm Ontime & Vol_LTC',val:`${otIcon} ${dOt==null?'—':Math.abs(dOt).toFixed(1)+'%'} · ${volIcon} ${fmt(Math.abs(dVol))}`,sub:n2?`vs ${agingFmtDate(n2)}`:'—',c:otCol,bg:'#FEF9C3'},
+  {ic:'🗺️',label:'Phạm vi dữ liệu',val:`${nAM} AM · ${nBC} BC`,sub:`${nShift} shift · ${dates.length} ngày`,c:'#7C3AED',bg:'#FAF5FF'}
+].forEach(k=>{kh+=`<div class="kpi-card" style="border-top:none"><div class="kpi-ico" style="background:${k.bg}">${k.ic}</div><div class="kpi-label">${k.label}</div><div class="kpi-val" style="color:${k.c};font-size:${k.label.includes('Tăng')?'16px':'24px'}">${k.val}</div><div style="font-size:11px;color:var(--text-sub);margin-top:4px">${k.sub}</div></div>`;});
+kh+=`</div>`;
+if(n2)kh+=`<div class="analysis-box">📅 <strong>${agingFmtDate(n1)}</strong>: Ontime <strong style="color:${otCol}">${a1.pct!=null?a1.pct.toFixed(1)+'%':'—'}</strong> · Vol_ltc <strong>${fmt(a1.vol)}</strong> — so với ${agingFmtDate(n2)}: Ontime <span style="color:${otCol};font-weight:700">${otIcon} ${dOt==null?'—':Math.abs(dOt).toFixed(1)+'%'}</span> · Vol <span style="color:${volCol};font-weight:700">${volIcon} ${fmt(Math.abs(dVol))}</span>.</div>`;
+kpiEl.innerHTML=kh;
+amEl.innerHTML=otlcAmTable(data,dates,n1);
+bcEl.innerHTML=otlcBcTable(data,dates,n1);
+}
+function otlcAmTable(data,dates,n1){
+if(!dates.length)return'<p style="padding:16px;color:var(--text-sub)">Không có dữ liệu</p>';
+const pivot=otlcPivot(data,r=>r.am);
+const names=Object.keys(pivot).sort((a,b)=>{
+  const pa=pivot[a][n1]?.pct,pb=pivot[b][n1]?.pct;
+  const ha=pa!=null&&isFinite(pa),hb=pb!=null&&isFinite(pb);
+  if(ha&&hb)return pa-pb||a.localeCompare(b,'vi');
+  if(ha)return -1;if(hb)return 1;return a.localeCompare(b,'vi');
+});
+const gByD={};dates.forEach(d=>{gByD[d]=otlcAgg(data.filter(r=>r.date===d));});
+const cs='padding:6px 10px;';
+let h=`<div class="table-wrap" style="overflow-x:auto"><table style="font-size:12px"><thead><tr><th rowspan="2" style="${cs}text-align:center;width:32px">STT</th><th rowspan="2" style="${cs}min-width:130px">AM</th>${dates.map(d=>`<th colspan="2" style="${cs}text-align:center;border-left:2px solid #E5E7EB"><strong>${shortD(d)}</strong></th>`).join('')}</tr><tr>${dates.map(()=>`<th style="${cs}text-align:right;border-left:2px solid #E5E7EB">Vol_ltc</th><th style="${cs}text-align:center">Ontime</th>`).join('')}</tr></thead><tbody>`;
+names.forEach((name,i)=>{
+  h+=`<tr><td style="${cs}text-align:center;color:var(--text-sub);font-size:11px">${i+1}</td><td style="${cs}font-weight:700;white-space:nowrap">${name}</td>`;
+  dates.forEach(d=>{
+    const c=pivot[name]?.[d];
+    if(c&&c.pct!=null){const gc=otlcPctClass(c.pct);h+=`<td style="${cs}text-align:right;border-left:2px solid #F3F4F6">${fmt(c.vol)}</td><td style="${cs}text-align:center"><span class="pct ${gc}">${c.pct.toFixed(1)}%</span></td>`;}
+    else if(c){h+=`<td style="${cs}text-align:right;border-left:2px solid #F3F4F6">${fmt(c.vol)}</td><td style="${cs}text-align:center;color:var(--text-sub)">—</td>`;}
+    else h+=`<td style="${cs}text-align:right;border-left:2px solid #F3F4F6;color:var(--text-sub)">—</td><td>—</td>`;
+  });
+  h+='</tr>';
+});
+h+=`<tr class="tot"><td colspan="2" style="${cs}">Grand Total</td>`;
+dates.forEach(d=>{const c=gByD[d];if(c&&c.pct!=null){const gc=otlcPctClass(c.pct);h+=`<td style="${cs}text-align:right;border-left:2px solid #F3F4F6">${fmt(c.vol)}</td><td style="${cs}text-align:center"><span class="pct ${gc}">${c.pct.toFixed(1)}%</span></td>`;}else h+=`<td style="${cs}border-left:2px solid #F3F4F6">—</td><td>—</td>`;});
+h+='</tr></tbody></table></div>';
+return h;
+}
+function otlcBcTable(data,dates,n1){
+if(!dates.length)return'<p style="padding:16px;color:var(--text-sub)">Không có dữ liệu</p>';
+const pivot=otlcPivot(data,r=>r.bc,r=>({am:r.am}));
+const names=Object.keys(pivot).sort((a,b)=>{
+  const pa=pivot[a][n1]?.pct,pb=pivot[b][n1]?.pct;
+  const ha=pa!=null&&isFinite(pa),hb=pb!=null&&isFinite(pb);
+  if(ha&&hb)return pa-pb||a.localeCompare(b,'vi');
+  if(ha)return -1;if(hb)return 1;return a.localeCompare(b,'vi');
+});
+const gByD={};dates.forEach(d=>{gByD[d]=otlcAgg(data.filter(r=>r.date===d));});
+const cs='padding:5px 8px;';
+let h=`<div class="table-wrap" style="overflow-x:auto;max-height:1100px"><table style="font-size:12px"><thead style="position:sticky;top:0;z-index:4;background:#FEEDE4"><tr><th rowspan="2" style="${cs}text-align:center;width:30px;position:sticky;left:0;z-index:5;background:#FEEDE4">STT</th><th rowspan="2" style="${cs}min-width:140px;position:sticky;left:30px;z-index:5;background:#FEEDE4">Bưu Cục</th><th rowspan="2" style="${cs}min-width:80px;position:sticky;left:170px;z-index:5;background:#FEEDE4">AM</th>${dates.map(d=>`<th colspan="2" style="${cs}text-align:center;border-left:2px solid #E5E7EB"><strong>${shortD(d)}</strong></th>`).join('')}</tr><tr>${dates.map(()=>`<th style="${cs}text-align:right;border-left:2px solid #E5E7EB">Vol_ltc</th><th style="${cs}text-align:center">Ontime</th>`).join('')}</tr></thead><tbody>`;
+names.forEach((name,i)=>{
+  const row=pivot[name];
+  h+=`<tr><td style="${cs}text-align:center;color:var(--text-sub);font-size:11px;position:sticky;left:0;background:#fff;z-index:2">${i+1}</td><td style="${cs}font-weight:700;white-space:nowrap;position:sticky;left:30px;background:#fff;z-index:2">${name}${bcUnstableBadge(name)}</td><td style="${cs}color:var(--text-sub);font-size:11px;position:sticky;left:170px;background:#fff;z-index:2">${row.am||''}</td>`;
+  dates.forEach(d=>{
+    const c=row[d];
+    if(c&&c.pct!=null){const gc=otlcPctClass(c.pct);h+=`<td style="${cs}text-align:right;border-left:2px solid #F3F4F6">${fmt(c.vol)}</td><td style="${cs}text-align:center"><span class="pct ${gc}">${c.pct.toFixed(1)}%</span></td>`;}
+    else if(c){h+=`<td style="${cs}text-align:right;border-left:2px solid #F3F4F6">${fmt(c.vol)}</td><td style="${cs}text-align:center;color:var(--text-sub)">—</td>`;}
+    else h+=`<td style="${cs}text-align:right;border-left:2px solid #F3F4F6;color:var(--text-sub)">—</td><td>—</td>`;
+  });
+  h+='</tr>';
+});
+h+=`<tr class="tot"><td style="${cs}position:sticky;left:0;background:#F8F9FA;z-index:2"></td><td colspan="2" style="${cs}position:sticky;left:30px;background:#F8F9FA;z-index:2">Grand Total</td>`;
+dates.forEach(d=>{const c=gByD[d];if(c&&c.pct!=null){const gc=otlcPctClass(c.pct);h+=`<td style="${cs}text-align:right;border-left:2px solid #F3F4F6">${fmt(c.vol)}</td><td style="${cs}text-align:center"><span class="pct ${gc}">${c.pct.toFixed(1)}%</span></td>`;}else h+=`<td style="${cs}border-left:2px solid #F3F4F6">—</td><td>—</td>`;});
+h+='</tr></tbody></table></div>';
 return h;
 }
 
@@ -5020,6 +5252,10 @@ if(p13Active){window._ltkctLoaded=true;buildLTKCTPage();}
 const p9Active=document.getElementById('p9')?.classList.contains('active');
 window._rotlcLoaded=false;
 if(p9Active){window._rotlcLoaded=true;document.getElementById('p9').innerHTML=rotLCSkeleton(rotData);renderRotLC();}
+// p14 — Ontime Luân Chuyển: lazy-load / refresh nếu đang mở
+const p14Active=document.getElementById('p14')?.classList.contains('active');
+window._otlcLoaded=false;window._OTLC={rows:[],greenThr:90,yellowThr:80};
+if(p14Active){window._otlcLoaded=true;buildOntimeLCPage();}
 // p10/p11 — Nhân sự: lazy-load khi mở tab
 window._hronLoaded=false;window._nsLoaded=false;
 const p10Active=document.getElementById('p10')?.classList.contains('active');
@@ -5036,8 +5272,9 @@ loadAll=async function(){
 const btn=document.getElementById('refreshBtn');btn.classList.add('spinning');btn.disabled=true;
 window._ROTLC=null;window._BATON={rows:[],unstable:new Set(),byBC:{}};
 window._HRON={rows:[],charts:{}};window._NS={rows:[],charts:{}};
-window._gtcdLoaded=false;window._rotlcLoaded=false;window._hronLoaded=false;window._nsLoaded=false;window._ltkctLoaded=false;
-['p0','p1','p2','p3','p4','p5','p6','p7','p8','p9','p10','p11','p13'].forEach(id=>{const el=document.getElementById(id);if(el)el.innerHTML='<div class="loading"><div class="spinner"></div><div class="loading-text">Đang tải dữ liệu mới...</div></div>';});
+window._gtcdLoaded=false;window._rotlcLoaded=false;window._otlcLoaded=false;window._hronLoaded=false;window._nsLoaded=false;window._ltkctLoaded=false;
+window._OTLC={rows:[],greenThr:90,yellowThr:80};
+['p0','p1','p2','p3','p4','p5','p6','p7','p8','p9','p10','p11','p13','p14'].forEach(id=>{const el=document.getElementById(id);if(el)el.innerHTML='<div class="loading"><div class="spinner"></div><div class="loading-text">Đang tải dữ liệu mới...</div></div>';});
 await init();
 };
 
