@@ -489,8 +489,7 @@ function shortD(iso){const p=(iso||'').split('-');return p.length===3?`${p[2]}/$
 function bcMatchUnstable(bc){
 const u=getUnstableSet();if(!bc||!u.size)return false;
 if(u.has(bc))return true;
-const b=bc.toLowerCase();
-for(const x of u){const t=x.toLowerCase();if(b.includes(t)||t.includes(b))return true;}
+for(const x of u){if(bcSame(x,bc))return true;}
 return false;
 }
 function buildBc2AmMap(){
@@ -597,11 +596,76 @@ return parsePct(s);
 }
 function batonFindHeader(raw){
 const lim=Math.min((raw||[]).length,40);
+let fallback=-1;
 for(let i=0;i<lim;i++){
   const H=(raw[i]||[]).map(normHdr);
   if(H.some(h=>h==='ten buu cuc'||h==='ten bc'||h.includes('ten buu cuc')))return i;
+  if(fallback<0&&H.some(h=>h==='buu cuc'||h.endsWith(' buu cuc'))&&H.some(h=>h.includes('gtc')))fallback=i;
 }
-return -1;
+return fallback;
+}
+function batonHeaderScore(h){
+if(!h)return 0;
+let s=0;
+if(h.includes('ten buu cuc')||h==='ten bc'||h==='buu cuc')s+=5;
+if(h==='vung'||h==='tinh')s+=4;
+if(h==='id buu cuc'||h==='id'||h.startsWith('id '))s+=4;
+if(h.includes('gtc'))s+=4;
+if(h.includes('vol'))s+=3;
+if(h.includes('ty trong'))s+=3;
+if(h.includes('tong vol'))s+=4;
+return s;
+}
+function batonRowLooksData(row){
+return (row||[]).some(c=>{
+  if(typeof c==='number'&&isFinite(c)&&((c>=100000)||(c>0&&c<=1.5)))return true;
+  const s=String(c??'').trim();
+  if(/^\d{6,}$/.test(s))return true;
+  if(/^\d+(?:[.,]\d+)?%$/.test(s))return true;
+  return false;
+});
+}
+function batonHeaderBand(raw){
+const nameIdx=batonFindHeader(raw);
+if(nameIdx<0)return null;
+let start=nameIdx,end=nameIdx;
+const consider=(idx,dir)=>{
+  if(idx<0||idx>=(raw||[]).length)return false;
+  const row=raw[idx]||[];
+  if(batonRowLooksData(row))return false;
+  const H=row.map(normHdr);
+  const hits=H.reduce((n,h)=>n+(batonHeaderScore(h)>0?1:0),0);
+  if(hits<3)return false;
+  const dates=row.filter(c=>parseSheetDate(c)).length;
+  if(dates&&dates>=hits)return false;
+  if(dir<0)start=idx;else end=idx;
+  return true;
+};
+if(consider(nameIdx+1,1)){if(end===nameIdx+1)consider(nameIdx+2,1);}
+else{
+  const gap=raw[nameIdx+1]||[];
+  if(!gap.length||gap.every(c=>String(c??'').trim()===''))consider(nameIdx+2,1);
+}
+let seenGtc=false;
+for(let i=nameIdx;i<=end;i++){if((raw[i]||[]).some(c=>normHdr(c).includes('gtc')))seenGtc=true;}
+if(!seenGtc)consider(nameIdx-1,-1);
+const width=Math.max(0,...raw.slice(start,end+1).map(r=>(r||[]).length));
+const H=[];
+for(let c=0;c<width;c++){
+  let pick='',best=-1;
+  for(let i=start;i<=end;i++){
+    const cell=normHdr((raw[i]||[])[c]);
+    const sc=batonHeaderScore(cell);
+    if(cell&&sc>=best){pick=cell;best=sc;}
+  }
+  H.push(pick);
+}
+return{nameIdx,start,end,H,isNew:H.some(h=>h.includes('gtc'))};
+}
+function batonText(v){
+if(v==null||v==='')return '';
+if(typeof v==='number'&&isFinite(v))return Math.abs(v-Math.round(v))<1e-6?String(Math.round(v)):String(v);
+return String(v).trim();
 }
 function batonFindCol(H,pred){for(let i=0;i<H.length;i++)if(pred(H[i]))return i;return -1;}
 function batonHasTok(h,tok){return new RegExp('(?:^| )'+tok+'(?: |$)').test(h);}
@@ -671,18 +735,18 @@ return{
 }
 function parseBatonSheet(raw){
 raw=raw||[];
-const headerIdx=batonFindHeader(raw);
-const empty={rows:[],unstable:new Set(),byBC:{},format:'',summary:{},dates:{}};
-if(headerIdx<0){
+const band=batonHeaderBand(raw);
+const headerIdx=band?band.nameIdx:-1;
+if(!band){
   const rows=raw.slice(1).filter(r=>(r[3]||'').trim()).map(batonLegacyRow).filter(r=>r.bc&&normHdr(r.bc)!=='ten buu cuc');
   const unstable=new Set(rows.map(r=>r.bc));
   const byBC={};rows.forEach(r=>{byBC[r.bc]=r;});
   return{rows,unstable,byBC,format:rows.length?'legacy':'',summary:{},dates:{}};
 }
-const H=(raw[headerIdx]||[]).map(normHdr);
-const isNew=H.some(h=>h.includes('gtc'));
+const H=band.H;
+const isNew=band.isNew;
 if(!isNew){
-  const rows=raw.slice(headerIdx+1).map(batonLegacyRow).filter(r=>r.bc&&normHdr(r.bc)!=='ten buu cuc'&&normHdr(r.bc)!=='buu cuc');
+  const rows=raw.slice(band.end+1).map(batonLegacyRow).filter(r=>r.bc&&normHdr(r.bc)!=='ten buu cuc'&&normHdr(r.bc)!=='buu cuc');
   const unstable=new Set(rows.map(r=>r.bc));
   const byBC={};rows.forEach(r=>{byBC[r.bc]=r;});
   return{rows,unstable,byBC,format:rows.length?'legacy':'',summary:{},dates:{}};
@@ -706,9 +770,16 @@ const cols={
   tongVol:batonFindCol(H,h=>h.includes('tong vol'))
 };
 const cell=(r,i)=>i>=0?r[i]:'';
-let rows=raw.slice(headerIdx+1).map(r=>{
-  const bc=String(cell(r,cols.bc)??'').trim();
-  if(!bc||normHdr(bc)==='ten buu cuc'||normHdr(bc)==='buu cuc')return null;
+const rows=[];
+let lastVung='',lastTinh='';
+raw.slice(band.end+1).forEach(r=>{
+  const bc=batonText(cell(r,cols.bc));
+  const bcN=normHdr(bc);
+  if(!bc||bcN==='ten buu cuc'||bcN==='ten bc'||bcN==='buu cuc'||bcN.includes('canh bao')||bcN.includes('tong so'))return;
+  let vung=batonText(cell(r,cols.vung));
+  let tinh=batonText(cell(r,cols.tinh));
+  if(!vung)vung=lastVung;else lastVung=vung;
+  if(!tinh)tinh=lastTinh;else lastTinh=tinh;
   const gtcTb7=parsePctOrNull(cell(r,cols.gtcTb7));
   const gtcBest=parsePctOrNull(cell(r,cols.gtcBest));
   const tyTrong=parsePctOrNull(cell(r,cols.tyTrong));
@@ -717,17 +788,17 @@ let rows=raw.slice(headerIdx+1).map(r=>{
   const gtcN3=parsePctOrNull(cell(r,cols.gtcN3));
   const volN1=parseSheetNum(cell(r,cols.volN1));
   const volTb7=parseSheetNum(cell(r,cols.volTb7));
-  return{
-    format:'gtc',vung:String(cell(r,cols.vung)??'').trim(),tinh:String(cell(r,cols.tinh)??'').trim(),id:String(cell(r,cols.id)??'').trim(),bc,
+  rows.push({
+    format:'gtc',vung,tinh,id:batonText(cell(r,cols.id)),bc,
     gtcTb7,gtcBest,tyTrong,gtcN1,volN1,gtcN2,volN2:parseSheetNum(cell(r,cols.volN2)),gtcN3,volN3:parseSheetNum(cell(r,cols.volN3)),
     tyTrongQG:parsePctOrNull(cell(r,cols.tyTrongQG)),volTb7,tongVol:parseSheetNum(cell(r,cols.tongVol)),
     blLmTong:0,blLmOver5:0,pctBlLmOver5:0,blKtcTong:0,blKtcCungTinh:0,pctBlKtc:0,
     donTaoN1:0,donTaoL7d:0,donGtcN1:volN1,donGtcL7d:volTb7,donGtcMaxL7d:0,duKienClear:0,
     lyDo:batonReason(gtcTb7,tyTrong,gtcN1)
-  };
-}).filter(Boolean);
+  });
+});
 const tnt=rows.filter(r=>normHdr(r.vung)==='tnt'||normHdr(r.vung).includes('tnt'));
-if(tnt.length)rows=tnt;
+if(tnt.length)rows.splice(0,rows.length,...tnt);
 const unstable=new Set(rows.map(r=>r.bc));
 const byBC={};rows.forEach(r=>{byBC[r.bc]=r;});
 return{rows,unstable,byBC,format:'gtc',summary:batonSummary(raw,headerIdx),dates:batonDates(raw,headerIdx,cols)};
@@ -737,21 +808,40 @@ if(!r)return'—';
 if(r.format==='gtc')return`%GTC TB 7N=${r.gtcTb7==null?'—':r.gtcTb7.toFixed(1)+'%'}, tỷ trọng mốc=${r.tyTrong==null?'—':r.tyTrong.toFixed(1)+'%'}, GTC N-1=${r.gtcN1==null?'—':r.gtcN1.toFixed(1)+'%'} (Vol ${fmt(r.volN1)})${r.lyDo?`, ${r.lyDo}`:''}`;
 return`Tồn LM=${fmt(r.blLmTong)}, %Tồn>5N=${(r.pctBlLmOver5||0).toFixed(1)}%, Lý do=${r.lyDo||'—'}`;
 }
+function batonParseIsGood(b){
+return !!(b&&b.format==='gtc'&&b.rows&&b.rows.length&&b.rows.some(r=>r.bc&&(r.gtcTb7!=null||r.gtcN1!=null||r.gtcBest!=null)));
+}
 async function ensureBaton(){
-if(window._BATON?.rows?.length)return window._BATON;
+if(batonParseIsGood(window._BATON))return window._BATON;
 try{
   const raw=await fetchSheetById(AGING_SID,'Baton');
   window._BATON=parseBatonSheet(raw);
 }catch(e){window._BATON=window._BATON||{rows:[],unstable:new Set(),byBC:{},format:'',summary:{},dates:{}};}
 return window._BATON;
 }
+function bcCore(s){
+let raw=String(s||'').trim();
+if(!raw)return '';
+raw=raw.replace(/^\(\s*[A-Za-z]{2,6}\s*\)\s*/,'').trim();
+raw=raw.replace(/^(bc|bưu\s*cục|buu\s*cuc)\s+/i,'').trim();
+raw=raw.replace(/\s+[-–—]\s+.+$/,'').trim();
+raw=raw.replace(/\s*\([^)]*\)\s*$/,'').trim();
+return normHdr(raw);
+}
 function bcSame(a,b){
 const x=String(a||'').trim(),y=String(b||'').trim();
 if(!x||!y)return false;
 if(x.toLowerCase()===y.toLowerCase())return true;
-const xl=x.toLowerCase(),yl=y.toLowerCase();
-const s=xl.length<=yl.length?xl:yl,l=xl.length<=yl.length?yl:xl;
-return s.length>=10&&l.includes(s);
+const cx=bcCore(x),cy=bcCore(y);
+if(!cx||!cy)return false;
+if(cx===cy)return true;
+const s=cx.length<=cy.length?cx:cy,l=cx.length<=cy.length?cy:cx;
+if(s.length<6)return false;
+const i=l.indexOf(s);
+if(i<0)return false;
+const before=i===0||l[i-1]===' ';
+const after=i+s.length===l.length||l[i+s.length]===' ';
+return before&&after;
 }
 function batonAmOf(bc){
 const m=buildBc2AmMap();
@@ -795,7 +885,7 @@ if(!hit.length)return null;
 return hit.reduce((s,r)=>s+(r.count||0),0);
 }
 function gtcTone(v){if(v==null||!isFinite(v))return'var(--text-sub)';if(v<50)return'var(--red)';if(v<60)return'var(--yellow)';return'var(--green)';}
-function fmtPct1(v){return v==null||!isFinite(v)?'—':v.toFixed(1)+'%';}
+function fmtPct1(v){if(v==null||!isFinite(v))return'—';if(Math.abs(v)<1)return v.toFixed(2)+'%';return v.toFixed(1)+'%';}
 function parseNum(v){const s=(v||'').toString().replace(/\./g,'').replace(',','.').replace(/[^\d.\-]/g,'');return parseFloat(s)||0;}
 function getUnstableSet(){
 if(window._BATON?.unstable?.size)return window._BATON.unstable;
@@ -803,7 +893,7 @@ if(window._AGING?.unstable?.size)return window._AGING.unstable;
 if(window._GTCD?.unstable?.size)return window._GTCD.unstable;
 return new Set();
 }
-function bcUnstableBadge(bc){return getUnstableSet().has(bc)?'<span style="display:inline-block;background:#FEE2E2;color:var(--red);border:1px solid #FECACA;border-radius:4px;font-size:9px;font-weight:700;padding:1px 5px;margin-left:5px">⚠ bất ổn</span>':'';}
+function bcUnstableBadge(bc){return bcMatchUnstable(bc)?'<span style="display:inline-block;background:#FEE2E2;color:var(--red);border:1px solid #FECACA;border-radius:4px;font-size:9px;font-weight:700;padding:1px 5px;margin-left:5px">⚠ bất ổn</span>':'';}
 function isGrandRow(name){return(name||'').toLowerCase().includes('grand total');}
 function extractAmBcFromGtcSheets(rowsAM,rowsBC){
 const ams=new Set(),bcs=new Set();
@@ -870,8 +960,8 @@ let h=`<div class="card"><div class="card-header"><div class="card-title"><div c
 h+=monoCopyBox('BƯU CỤC BẤT ỔN — TỔNG HỢP',headers,rows,'');
 if(window._BATON?.rows?.length){
   const neu=window._BATON.format==='gtc';
-  const bh=neu?['Bưu Cục','Tỉnh','%GTC TB 7N','Tỷ trọng mốc','%GTC N-1','Vol N-1','%GTC N-2','Vol N-2','%GTC N-3','Vol N-3','Ghi chú']:['Bưu Cục','Tỉnh','Tồn LM (tồn đơn hệ thống)','%Tồn LM >5N','Đơn GTC N-1','Đơn GTC L7D','Lý do'];
-  const br=window._BATON.rows.map(r=>neu?[r.bc,r.tinh,fmtPct1(r.gtcTb7),fmtPct1(r.tyTrong),fmtPct1(r.gtcN1),fmt(r.volN1),fmtPct1(r.gtcN2),fmt(r.volN2),fmtPct1(r.gtcN3),fmt(r.volN3),r.lyDo||'—']:[r.bc,r.tinh,fmt(r.blLmTong),r.pctBlLmOver5.toFixed(1)+'%',fmt(r.donGtcN1),fmt(r.donGtcL7d),r.lyDo||'—']);
+  const bh=neu?['Vùng','Tỉnh','ID Bưu cục','Tên Bưu cục','%GTC_TB 7 ngày','%GTC tốt nhất 6 tháng','%Tỷ trọng (1)/(2)','%GTC N-1','VolGTC N-1','%GTC N-2','VolGTC N-2','%GTC N-3','VolGTC N-3','Tỷ trọng vol / toàn quốc','VolGTC_TB 7 ngày','Tổng Vol cần giao']:['Bưu Cục','Tỉnh','Tồn LM (tồn đơn hệ thống)','%Tồn LM >5N','Đơn GTC N-1','Đơn GTC L7D','Lý do'];
+  const br=window._BATON.rows.map(r=>neu?[r.vung,r.tinh,r.id,r.bc,fmtPct1(r.gtcTb7),fmtPct1(r.gtcBest),fmtPct1(r.tyTrong),fmtPct1(r.gtcN1),fmt(r.volN1),fmtPct1(r.gtcN2),fmt(r.volN2),fmtPct1(r.gtcN3),fmt(r.volN3),fmtPct1(r.tyTrongQG),fmt(r.volTb7),fmt(r.tongVol)]:[r.bc,r.tinh,fmt(r.blLmTong),r.pctBlLmOver5.toFixed(1)+'%',fmt(r.donGtcN1),fmt(r.donGtcL7d),r.lyDo||'—']);
   h+=monoCopyBox('BATON — Chi tiết sheet nguồn',bh,br,'');
 }
 h+=`</div>`;return h;
@@ -949,9 +1039,17 @@ function _isLtkctSheet(rows){
   const H=(rows&&rows[0]||[]).map(normHdr);
   return H.some(h=>h.includes('moc gio')||h.includes('leadtime')||h.includes('total lt'));
 }
+function _isBatonSheet(rows){
+  const lim=Math.min((rows||[]).length,24);
+  let blob='';
+  for(let i=0;i<lim;i++)blob+=' '+((rows[i]||[]).map(normHdr).join(' '));
+  if(blob.includes('ten buu cuc')||blob.includes('ten bc'))return true;
+  if(blob.includes('tong so')&&blob.includes('canh bao'))return true;
+  return false;
+}
 function _filterSheetRows(rows,names,bc2am){
   if(!rows||rows.length<2||!names||!names.length)return rows;
-  if(_isLtkctSheet(rows))return rows;
+  if(_isLtkctSheet(rows)||_isBatonSheet(rows))return rows;
   const match=v=>names.some(n=>aiAmEquals(v,n));
   const strict=window._ACL==='am';
   const idx=_hdrIdx(rows[0],h=>h==='am'||h==='am chuan'||h==='area manager');
@@ -3420,7 +3518,7 @@ Promise.all([loadHRONData(),ensureBaton()]).then(([rows])=>{
 }
 function hronSkeleton(rows){
 const ams=[...new Set(rows.map(r=>r.am).filter(Boolean))].sort();
-const bcs=[...new Set(rows.map(r=>r.bc).filter(Boolean))].sort();
+const bcs=[...new Set(rows.map(r=>r.bc).concat((window._BATON?.rows||[]).map(r=>r.bc)).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'vi'));
 return`<div class="page-header">
   <div class="page-title">Định biên nhân sự</div>
 </div>
@@ -3434,7 +3532,7 @@ return`<div class="page-header">
 function hronFiltered(){
 const H=window._HRON;
 const am=document.getElementById('hron_am')?.value||'',bc=document.getElementById('hron_bc')?.value||'';
-return H.rows.filter(r=>(!am||r.am===am)&&(!bc||r.bc===bc));
+return H.rows.filter(r=>(!am||r.am===am)&&(!bc||r.bc===bc||bcSame(r.bc,bc)));
 }
 function hronTrendTable(arr,keyField,title,icon,badge,last7,latest,prev,unstableSet){
 const maxV=Math.max(...arr.map(r=>r[latest]||0),1);
@@ -3461,53 +3559,61 @@ function batonDayLabel(iso,fallback){
 const p=(iso||'').split('-');
 return p.length===3?`${+p[2]}/${+p[1]}`:fallback;
 }
+function batonSortRows(rows){
+return (rows||[]).slice().sort((a,b)=>{
+  const av=a.gtcTb7==null?1e9:a.gtcTb7,bv=b.gtcTb7==null?1e9:b.gtcTb7;
+  if(av!==bv)return av-bv;
+  const an=a.gtcN1==null?1e9:a.gtcN1,bn=b.gtcN1==null?1e9:b.gtcN1;
+  if(an!==bn)return an-bn;
+  return String(a.bc||'').localeCompare(String(b.bc||''),'vi');
+});
+}
 function hronBatonCardHTML(am,bc){
 const B=window._BATON||{};
-const rows=batonFilteredRows(am,bc).slice().sort((a,b)=>{
-  const av=a.gtcN1==null?1e9:a.gtcN1,bv=b.gtcN1==null?1e9:b.gtcN1;
-  if(av!==bv)return av-bv;
-  return (a.gtcTb7==null?1e9:a.gtcTb7)-(b.gtcTb7==null?1e9:b.gtcTb7);
-});
+const rows=batonSortRows(batonFilteredRows(am,bc));
 const sum=B.summary||{},dates=B.dates||{};
-const d1=batonDayLabel(dates.n1,'N-1'),d2=batonDayLabel(dates.n2,'N-2'),d3=batonDayLabel(dates.n3,'N-3');
+const d1=dates.n1?shortD(dates.n1):'N-1',d2=dates.n2?shortD(dates.n2):'N-2',d3=dates.n3?shortD(dates.n3):'N-3';
 const bits=[];
-if(sum.total)bits.push(`<strong>${fmt(sum.total)}</strong> BC cảnh báo toàn quốc`);
-if(sum.over30!=null)bits.push(`<strong>${fmt(sum.over30)}</strong> BC &gt;30 ngày liên tiếp`);
-bits.push(`đang xem <strong>${fmt(rows.length)}</strong> BC vùng TNT`);
-const th='padding:8px 10px;text-align:right;font-weight:800;font-size:11px;color:var(--text-sub);letter-spacing:.2px;border-bottom:2px solid var(--border);white-space:nowrap;background:var(--bg);position:sticky;top:0';
-const thL=th.replace('text-align:right','text-align:left');
+if(sum.total)bits.push(`Tổng số lượng BC cảnh báo: <strong>${fmt(sum.total)}</strong>`);
+if(sum.over30!=null)bits.push(`BC &gt;30 ngày cảnh báo liên tiếp: <strong>${fmt(sum.over30)}</strong>`);
+bits.push(`đang xem <strong>${fmt(rows.length)}</strong> bưu cục vùng TNT`);
+const th='padding:8px 10px;text-align:center;font-weight:800;font-size:11px;color:var(--text-sub);letter-spacing:.2px;border-bottom:2px solid var(--border);white-space:nowrap;background:#FEE2E2;position:sticky;top:0;z-index:2';
 const td='padding:8px 10px;white-space:nowrap;border-bottom:1px solid var(--border);font-size:12px';
 const pctCell=(v,isRatio)=>{
   const bad=v!=null&&(isRatio?v<70:v<50);
   const c=isRatio?(v==null?'var(--text-sub)':v<70?'var(--red)':'var(--green)'):gtcTone(v);
   return `<td style="${td};text-align:right;font-weight:700;color:${c}${bad?';background:#FEF2F2':''}">${fmtPct1(v)}</td>`;
 };
+const volCell=(v,gtc)=>{
+  const bad=gtc!=null&&gtc<50;
+  return `<td style="${td};text-align:right;font-weight:700;color:${gtcTone(gtc)}${bad?';background:#FEF2F2':''}">${fmt(v)}</td>`;
+};
 let h=`<div style="background:var(--card);border-radius:12px;box-shadow:var(--shadow-sm);margin-bottom:20px;overflow:hidden;border-top:3px solid var(--red)">`;
-h+=`<div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:18px">⚠️</span><span style="font-weight:700;font-size:14px">Bưu Cục Bất Ổn — 7 ngày</span><span style="background:var(--red);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px">${rows.length} BC</span></div>`;
-h+=`<div style="padding:10px 18px;font-size:12px;color:var(--text-sub);background:#FEF2F2;border-bottom:1px solid var(--border)">${bits.join(' · ')}. Xếp %GTC ngày gần nhất thấp trước. Đỏ: %GTC &lt;50 hoặc tỷ trọng &lt;70% mốc 6 tháng. Vàng: %GTC 50–60.</div>`;
+h+=`<div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:18px">⚠️</span><span style="font-weight:700;font-size:14px">Bưu Cục Bất Ổn — sheet Baton</span><span style="background:var(--red);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px">${rows.length} BC</span></div>`;
+h+=`<div style="padding:10px 18px;font-size:12px;color:var(--text-sub);background:#FEF2F2;border-bottom:1px solid var(--border)">${bits.join(' · ')}. Cột và tên bưu cục lấy đúng sheet Baton, xếp %GTC_TB 7 ngày tăng dần. Đỏ: %GTC &lt;50 hoặc tỷ trọng &lt;70% mốc. Vàng: %GTC 50–60.</div>`;
 if(!rows.length)return h+'<p style="padding:16px;color:var(--text-sub)">Không có bưu cục bất ổn trong bộ lọc hiện tại.</p></div>';
-h+=`<div style="overflow:auto;max-height:520px"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>`;
-h+=`<th style="${thL}">#</th><th style="${thL}">Bưu cục</th><th style="${thL}">Tỉnh</th><th style="${thL}">AM</th><th style="${th}">NS</th>`;
-h+=`<th style="${th}">%GTC TB 7N</th><th style="${th}">Mốc 6T</th><th style="${th}">Tỷ trọng</th>`;
-h+=`<th style="${th};background:#FFF0EB;color:#C8461A">%GTC ${d1}</th><th style="${th};background:#FFF0EB">Vol ${d1}</th>`;
-h+=`<th style="${th}">%GTC ${d2}</th><th style="${th}">Vol ${d2}</th>`;
-h+=`<th style="${th}">%GTC ${d3}</th><th style="${th}">Vol ${d3}</th>`;
-h+=`<th style="${thL}">Ghi chú</th></tr></thead><tbody>`;
+h+=`<div style="overflow:auto;max-height:560px"><table style="width:max-content;min-width:100%;border-collapse:collapse;font-size:12px"><thead>`;
+h+=`<tr><th rowspan="2" style="${th}">#</th><th rowspan="2" style="${th};text-align:left">Vùng</th><th rowspan="2" style="${th};text-align:left">Tỉnh</th><th rowspan="2" style="${th}">ID Bưu cục</th><th rowspan="2" style="${th};text-align:left">Tên Bưu cục</th>`;
+h+=`<th rowspan="2" style="${th}">%GTC_TB 7 ngày</th><th rowspan="2" style="${th}">%GTC tốt nhất 6 tháng</th><th rowspan="2" style="${th}">%Tỷ trọng (1)/(2)</th>`;
+h+=`<th colspan="2" style="${th};background:#FFF0EB;color:#C8461A">${d1}</th><th colspan="2" style="${th}">${d2}</th><th colspan="2" style="${th}">${d3}</th>`;
+h+=`<th rowspan="2" style="${th}">Tỷ trọng vol / toàn quốc N-1</th><th rowspan="2" style="${th}">VolGTC_TB 7 ngày</th><th rowspan="2" style="${th}">Tổng Vol cần giao</th><th rowspan="2" style="${th}">NS</th><th rowspan="2" style="${th};text-align:left">AM</th></tr>`;
+h+=`<tr><th style="${th};top:32px;background:#FFF0EB">%GTC</th><th style="${th};top:32px;background:#FFF0EB">VolGTC</th><th style="${th};top:32px">%GTC</th><th style="${th};top:32px">VolGTC</th><th style="${th};top:32px">%GTC</th><th style="${th};top:32px">VolGTC</th></tr></thead><tbody>`;
 rows.forEach((r,i)=>{
   const ns=hronCountForBc(r.bc);
   h+=`<tr><td style="${td};text-align:center;color:var(--text-sub)">${i+1}</td>`;
-  h+=`<td style="${td};font-weight:700">${r.bc}</td>`;
-  h+=`<td style="${td};color:var(--text-sub)">${r.tinh||'—'}</td>`;
-  h+=`<td style="${td};color:var(--text-sub);font-size:11px">${batonAmOf(r.bc)||'—'}</td>`;
-  h+=`<td style="${td};text-align:right;font-weight:700">${ns==null?'—':fmt(ns)}</td>`;
+  h+=`<td style="${td}">${escHtml(r.vung)||'—'}</td>`;
+  h+=`<td style="${td};color:var(--text-sub)">${escHtml(r.tinh)||'—'}</td>`;
+  h+=`<td style="${td};text-align:right;font-variant-numeric:tabular-nums">${escHtml(r.id)||'—'}</td>`;
+  h+=`<td style="${td};font-weight:700">${escHtml(r.bc)}</td>`;
   h+=pctCell(r.gtcTb7,false)+pctCell(r.gtcBest,false)+pctCell(r.tyTrong,true);
-  h+=pctCell(r.gtcN1,false);
-  h+=`<td style="${td};text-align:right;background:#FFF7F2;color:${gtcTone(r.gtcN1)}">${fmt(r.volN1)}</td>`;
-  h+=pctCell(r.gtcN2,false);
-  h+=`<td style="${td};text-align:right;color:${gtcTone(r.gtcN2)}">${fmt(r.volN2)}</td>`;
-  h+=pctCell(r.gtcN3,false);
-  h+=`<td style="${td};text-align:right;color:${gtcTone(r.gtcN3)}">${fmt(r.volN3)}</td>`;
-  h+=`<td style="${td};color:var(--text-sub);font-size:11px;white-space:normal;min-width:200px">${r.lyDo||'—'}</td></tr>`;
+  h+=pctCell(r.gtcN1,false)+volCell(r.volN1,r.gtcN1);
+  h+=pctCell(r.gtcN2,false)+volCell(r.volN2,r.gtcN2);
+  h+=pctCell(r.gtcN3,false)+volCell(r.volN3,r.gtcN3);
+  h+=`<td style="${td};text-align:right">${fmtPct1(r.tyTrongQG)}</td>`;
+  h+=`<td style="${td};text-align:right;font-weight:700">${fmt(r.volTb7)}</td>`;
+  h+=`<td style="${td};text-align:right;font-weight:700">${fmt(r.tongVol)}</td>`;
+  h+=`<td style="${td};text-align:right;font-weight:700">${ns==null?'—':fmt(ns)}</td>`;
+  h+=`<td style="${td};color:var(--text-sub);font-size:11px">${escHtml(batonAmOf(r.bc))||'—'}</td></tr>`;
 });
 h+='</tbody></table></div></div>';
 return h;
@@ -3543,7 +3649,9 @@ const amArr=Object.values(amMap).sort((a,b)=>(b[latest]||0)-(a[latest]||0));
 const bcMap={};recent.forEach(r=>{if(!r.bc)return;if(!bcMap[r.bc])bcMap[r.bc]={bc:r.bc};bcMap[r.bc][r.date]=(bcMap[r.bc][r.date]||0)+r.count;});
 const bcArr=Object.values(bcMap).sort((a,b)=>(b[latest]||0)-(a[latest]||0));
 const amF=document.getElementById('hron_am')?.value||'',bcF=document.getElementById('hron_bc')?.value||'';
-let h=window._BATON?.format==='gtc'?hronBatonCardHTML(amF,bcF):hronTrendTable(unstableArr,'bc','Bưu Cục Bất Ổn — 7 ngày','⚠️',`${unstableArr.length} BC`,last7,latest,prev,unstableSet);
+const batonRowsNow=batonFilteredRows(amF,bcF);
+const showBaton=window._BATON?.format==='gtc'||batonRowsNow.some(r=>r.gtcTb7!=null||r.gtcN1!=null||r.gtcBest!=null);
+let h=showBaton?hronBatonCardHTML(amF,bcF):hronTrendTable(unstableArr,'bc','Bưu Cục Bất Ổn — 7 ngày','⚠️',`${unstableArr.length} BC`,last7,latest,prev,unstableSet);
 h+=hronTrendTable(amArr,'am','Theo AM — 7 ngày gần nhất','👤',`${amArr.length} AM`,last7,latest,prev,unstableSet);
 h+=hronTrendTable(bcArr,'bc','Theo Bưu Cục — 7 ngày gần nhất','🏪',`${bcArr.length} bưu cục`,last7,latest,prev,unstableSet);
 document.getElementById('hron_tables').innerHTML=h;
@@ -3589,7 +3697,7 @@ Promise.all([loadNSData(),ensureBaton()]).then(([rows])=>{
 function nsSkeleton(rows){
 const allD=[...new Set(rows.map(r=>r.date))].sort((a,b)=>b.localeCompare(a));
 const ams=[...new Set(rows.map(r=>r.am).filter(Boolean))].sort();
-const bcs=[...new Set(rows.map(r=>r.bc).filter(Boolean))].sort();
+const bcs=[...new Set(rows.map(r=>r.bc).concat((window._BATON?.rows||[]).map(r=>r.bc)).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'vi'));
 const dTo=allD[0]||'',dFrom=allD[Math.min(9,allD.length-1)]||'';
 const mkOpt=(arr,sv)=>arr.map(d=>`<option value="${d}"${d===sv?' selected':''}>${shortDDow(d)}</option>`).join('');
 return`<div class="page-header">
@@ -3616,7 +3724,7 @@ const lo=from<=to?from:to,hi=from<=to?to:from;
 const am=document.getElementById('ns_am')?.value||'',bc=document.getElementById('ns_bc')?.value||'';
 return N.rows.filter(r=>{
   if(r.date<lo||r.date>hi)return false;
-  if(bc&&r.bc!==bc)return false;
+  if(bc&&r.bc!==bc&&!bcSame(r.bc,bc))return false;
   if(am&&r.am!==am)return false;
   return true;
 });
@@ -3624,9 +3732,9 @@ return N.rows.filter(r=>{
 function nsRowsForBc(data,bc){return(data||[]).filter(r=>bcSame(r.bc,bc));}
 function nsBatonTableHTML(data){
 const am=document.getElementById('ns_am')?.value||'',bc=document.getElementById('ns_bc')?.value||'';
-const neu=window._BATON?.format==='gtc';
-const src=batonFilteredRows(am,bc);
+const src=batonSortRows(batonFilteredRows(am,bc));
 if(!src.length)return'<p style="padding:16px;color:var(--text-sub)">Chưa có bưu cục bất ổn trong bộ lọc (sheet Baton).</p>';
+const neu=window._BATON?.format==='gtc'||src.some(r=>r.gtcTb7!=null||r.gtcN1!=null);
 const arr=src.map(r=>{
   const rows=nsRowsForBc(data,r.bc);
   const m=rows.length?nsComputeMetrics(rows):null;
@@ -3638,46 +3746,44 @@ const arr=src.map(r=>{
     if(thu>0&&thu<NS_LOW_INCOME){low.add(x.nv);if(!minThu||thu<minThu)minThu=thu;}
   });
   return{r,m,nvLow:low.size,minThu,thu:m&&m.ngay>0?m.thuNhap:null};
-}).sort((a,b)=>{
-  const av=a.thu==null?1e15:a.thu,bv=b.thu==null?1e15:b.thu;
-  if(av!==bv)return av-bv;
-  const ag=a.r.gtcN1==null?1e9:a.r.gtcN1,bg=b.r.gtcN1==null?1e9:b.r.gtcN1;
-  return ag-bg;
 });
 const lowN=arr.filter(x=>x.thu!=null&&x.thu<NS_LOW_INCOME).length;
 const miss=arr.filter(x=>!x.m).length;
 const dates=window._BATON?.dates||{};
-const d1=batonDayLabel(dates.n1,'N-1');
+const d1=dates.n1?shortD(dates.n1):'N-1';
+const sum=window._BATON?.summary||{};
 const cs='padding:6px 10px;';
-let h=`<div class="analysis-box" style="margin:10px 16px 0">⚠️ <strong>${arr.length}</strong> bưu cục bất ổn${neu&&window._BATON?.summary?.total?` (toàn quốc ${fmt(window._BATON.summary.total)} BC cảnh báo)`:''}. Thu nhập TB dưới ${NS_LOW_INCOME.toLocaleString('vi-VN')}đ: <strong>${lowN}</strong> BC${miss?` · ${miss} BC chưa có năng suất trong khoảng ngày đang lọc`:''}. Xếp thu nhập thấp trước.</div>`;
-h+=`<div class="table-wrap" style="overflow:auto;max-height:520px"><table style="font-size:12px"><thead style="position:sticky;top:0;z-index:3;background:#FEE2E2"><tr>
+let h=`<div class="analysis-box" style="margin:10px 16px 0">⚠️ Nhóm bưu cục bất ổn theo sheet Baton: <strong>${arr.length}</strong> BC vùng TNT${sum.total?` · toàn quốc <strong>${fmt(sum.total)}</strong> BC cảnh báo`:''}${sum.over30!=null?` · &gt;30 ngày liên tiếp <strong>${fmt(sum.over30)}</strong>`:''}. Thu nhập TB dưới ${NS_LOW_INCOME.toLocaleString('vi-VN')}đ: <strong>${lowN}</strong> BC${miss?` · ${miss} BC chưa có năng suất trong khoảng ngày đang lọc`:''}. Cùng thứ tự %GTC_TB 7 ngày với sheet.</div>`;
+h+=`<div class="table-wrap" style="overflow:auto;max-height:560px"><table style="font-size:12px;width:max-content;min-width:100%"><thead style="position:sticky;top:0;z-index:3;background:#FEE2E2"><tr>
   <th style="${cs}text-align:center;width:34px">STT</th>
-  <th style="${cs}min-width:180px">Bưu cục</th>
+  <th style="${cs}">Vùng</th>
   <th style="${cs}min-width:90px">Tỉnh</th>
-  <th style="${cs}min-width:110px">AM</th>
+  <th style="${cs}">ID Bưu cục</th>
+  <th style="${cs}min-width:180px">Tên Bưu cục</th>
   <th style="${cs}text-align:right">NS Gán Giao TB</th>
   <th style="${cs}text-align:right">NS GTC</th>
   <th style="${cs}text-align:right">GTC TB</th>
   <th style="${cs}text-align:right">Thu nhập TB</th>
   <th style="${cs}text-align:center">NV</th>
   <th style="${cs}text-align:center">NV &lt;300k</th>`;
-if(neu)h+=`<th style="${cs}text-align:right">%GTC TB 7N</th><th style="${cs}text-align:right">%GTC ${d1}</th>`;
-h+=`<th style="${cs}min-width:160px">Ghi chú</th></tr></thead><tbody>`;
+if(neu)h+=`<th style="${cs}text-align:right">%GTC_TB 7 ngày</th><th style="${cs}text-align:right">%GTC ${d1}</th><th style="${cs}text-align:right">VolGTC ${d1}</th><th style="${cs}text-align:right">VolGTC_TB 7 ngày</th>`;
+h+=`<th style="${cs}min-width:110px">AM</th></tr></thead><tbody>`;
 arr.forEach((x,i)=>{
   const m=x.m,low=x.thu!=null&&x.thu<NS_LOW_INCOME;
   const thuTxt=x.thu==null?'—':Math.round(x.thu).toLocaleString('vi-VN')+'đ';
   h+=`<tr><td style="${cs}text-align:center;color:var(--text-sub)">${i+1}</td>
-  <td style="${cs}font-weight:700;white-space:nowrap">${x.r.bc}</td>
-  <td style="${cs}color:var(--text-sub)">${x.r.tinh||'—'}</td>
-  <td style="${cs}color:var(--text-sub);font-size:11px">${batonAmOf(x.r.bc)||'—'}</td>
+  <td style="${cs}">${escHtml(x.r.vung)||'—'}</td>
+  <td style="${cs}color:var(--text-sub)">${escHtml(x.r.tinh)||'—'}</td>
+  <td style="${cs}text-align:right">${escHtml(x.r.id)||'—'}</td>
+  <td style="${cs}font-weight:700;white-space:nowrap">${escHtml(x.r.bc)}</td>
   <td style="${cs}text-align:right">${m?m.nsGan.toFixed(1):'—'}</td>
   <td style="${cs}text-align:right;color:var(--green);font-weight:600">${m?m.nsGtc.toFixed(1):'—'}</td>
   <td style="${cs}text-align:right;color:#0EA5E9;font-weight:600">${m?m.gtcTB.toFixed(1):'—'}</td>
   <td style="${cs}text-align:right;font-weight:700;color:${low?'var(--red)':'var(--text-main)'}">${thuTxt}</td>
   <td style="${cs}text-align:center">${m?fmt(m.nvCount):'—'}</td>
   <td style="${cs}text-align:center;font-weight:800;color:${x.nvLow?'var(--red)':'var(--text-sub)'}">${x.nvLow||0}${x.nvLow&&x.minThu?`<div style="font-size:10px;font-weight:600">↓ ${Math.round(x.minThu).toLocaleString('vi-VN')}đ</div>`:''}</td>`;
-  if(neu)h+=`<td style="${cs}text-align:right;font-weight:700;color:${gtcTone(x.r.gtcTb7)}">${fmtPct1(x.r.gtcTb7)}</td><td style="${cs}text-align:right;font-weight:700;color:${gtcTone(x.r.gtcN1)}">${fmtPct1(x.r.gtcN1)}</td>`;
-  h+=`<td style="${cs}color:var(--text-sub);font-size:11px">${x.r.lyDo||'—'}</td></tr>`;
+  if(neu)h+=`<td style="${cs}text-align:right;font-weight:700;color:${gtcTone(x.r.gtcTb7)}">${fmtPct1(x.r.gtcTb7)}</td><td style="${cs}text-align:right;font-weight:700;color:${gtcTone(x.r.gtcN1)}">${fmtPct1(x.r.gtcN1)}</td><td style="${cs}text-align:right;color:${gtcTone(x.r.gtcN1)}">${fmt(x.r.volN1)}</td><td style="${cs}text-align:right">${fmt(x.r.volTb7)}</td>`;
+  h+=`<td style="${cs}color:var(--text-sub);font-size:11px">${escHtml(batonAmOf(x.r.bc))||'—'}</td></tr>`;
 });
 h+='</tbody></table></div>';
 return h;
@@ -3746,7 +3852,12 @@ arr.slice(0,25).forEach((x,i)=>{const u=bcMatchUnstable(x.bc)?' [BẤT ỔN]':''
 return s;
 }
 function renderNS(){
-const N=window._NS;if(!N.rows.length)return;
+const N=window._NS;
+if(!N.rows.length){
+  const batonEl=document.getElementById('ns_batonTable');
+  if(batonEl)batonEl.innerHTML=nsBatonTableHTML([]);
+  return;
+}
 const data=nsFiltered();
 const m=nsComputeMetrics(data);
 const dates=[...new Set(data.map(r=>r.date))].sort();
